@@ -1796,98 +1796,111 @@ fdgrowtable_exp(struct filedesc *fdp, int nfd)
 static void
 fdgrowtable(struct filedesc *fdp, int nfd)
 {
-	struct filedesc0 *fdp0;
-	struct freetable *ft;
-	struct fdescenttbl *ntable;
-	struct fdescenttbl *otable;
-	int nnfiles, onfiles;
-	NDSLOTTYPE *nmap, *omap;
+    struct filedesc0 *fdp0;
+    struct freetable *ft;
+    struct fdescenttbl *ntable;
+    struct fdescenttbl *otable;
+    int nnfiles, onfiles;
+    NDSLOTTYPE *nmap, *omap;
 
-	KASSERT(fdp->fd_nfiles > 0, ("zero-length file table"));
+    KASSERT(fdp->fd_nfiles > 0, ("zero-length file table"));
 
-	/* save old values */
-	onfiles = fdp->fd_nfiles;
-	otable = fdp->fd_files;
-	omap = fdp->fd_map;
+    /* save old values */
+    onfiles = fdp->fd_nfiles;
+    otable = fdp->fd_files;
+    omap = fdp->fd_map;
 
-	/* compute the size of the new table */
-	nnfiles = NDSLOTS(nfd) * NDENTRIES; /* round up */
-	if (nnfiles <= onfiles)
-		/* the table is already large enough */
-		return;
+    /* compute the size of the new table */
+    nnfiles = NDSLOTS(nfd) * NDENTRIES; /* round up */
+    if (nnfiles <= onfiles)
+        /* the table is already large enough */
+        return;
 
-	/*
-	 * Allocate a new table.  We need enough space for the number of
-	 * entries, file entries themselves and the struct freetable we will use
-	 * when we decommission the table and place it on the freelist.
-	 * We place the struct freetable in the middle so we don't have
-	 * to worry about padding.
-	 */
-	ntable = malloc(offsetof(struct fdescenttbl, fdt_ofiles) +
-	    nnfiles * sizeof(ntable->fdt_ofiles[0]) +
-	    sizeof(struct freetable),
-	    M_FILEDESC, M_ZERO | M_WAITOK);
-	/* copy the old data */
-	ntable->fdt_nfiles = nnfiles;
-	memcpy(ntable->fdt_ofiles, otable->fdt_ofiles,
-	    onfiles * sizeof(ntable->fdt_ofiles[0]));
+    /*
+     * Allocate a new table.  We need enough space for the number of
+     * entries, file entries themselves and the struct freetable we will use
+     * when we decommission the table and place it on the freelist.
+     * We place the struct freetable in the middle so we don't have
+     * to worry about padding.
+     */
+    ntable = malloc(offsetof(struct fdescenttbl, fdt_ofiles) +
+        nnfiles * sizeof(ntable->fdt_ofiles[0]) +
+        sizeof(struct freetable),
+        M_FILEDESC, M_ZERO | M_WAITOK);
+    /* copy the old data */
+    ntable->fdt_nfiles = nnfiles;
+    /* Change the existing memcpy calls to a safer approach */
+    if (onfiles > 0) {
+        __builtin_memcpy(ntable->fdt_ofiles, otable->fdt_ofiles,
+            onfiles * sizeof(ntable->fdt_ofiles[0]));
+    }
 
-	/*
-	 * Allocate a new map only if the old is not large enough.  It will
-	 * grow at a slower rate than the table as it can map more
-	 * entries than the table can hold.
-	 */
-	if (NDSLOTS(nnfiles) > NDSLOTS(onfiles)) {
-		nmap = malloc(NDSLOTS(nnfiles) * NDSLOTSIZE, M_FILEDESC,
-		    M_ZERO | M_WAITOK);
-		/* copy over the old data and update the pointer */
-		memcpy(nmap, omap, NDSLOTS(onfiles) * sizeof(*omap));
-		fdp->fd_map = nmap;
-	}
+    /*
+     * Allocate a new map only if the old is not large enough.  It will
+     * grow at a slower rate than the table as it can map more
+     * entries than the table can hold.
+     */
+    if (NDSLOTS(nnfiles) > NDSLOTS(onfiles)) {
+        nmap = malloc(NDSLOTS(nnfiles) * NDSLOTSIZE, M_FILEDESC,
+            M_ZERO | M_WAITOK);
+        /* copy over the old data and update the pointer */
+        if (NDSLOTS(onfiles) > 0) {
+            __builtin_memcpy(nmap, omap, NDSLOTS(onfiles) * sizeof(*omap));
+        }
+        fdp->fd_map = nmap;
+    }
 
-	/*
-	 * Make sure that ntable is correctly initialized before we replace
-	 * fd_files poiner. Otherwise fget_unlocked() may see inconsistent
-	 * data.
-	 */
-	atomic_store_rel_ptr((volatile void *)&fdp->fd_files, (uintptr_t)ntable);
+    /*
+     * Make sure that ntable is correctly initialized before we replace
+     * fd_files pointer. Otherwise fget_unlocked() may see inconsistent
+     * data.
+     */
+    atomic_store_rel_ptr((volatile void *)&fdp->fd_files, (uintptr_t)ntable);
 
-	/*
-	 * Free the old file table when not shared by other threads or processes.
-	 * The old file table is considered to be shared when either are true:
-	 * - The process has more than one thread.
-	 * - The file descriptor table has been shared via fdshare().
-	 *
-	 * When shared, the old file table will be placed on a freelist
-	 * which will be processed when the struct filedesc is released.
-	 *
-	 * Note that if onfiles == NDFILE, we're dealing with the original
-	 * static allocation contained within (struct filedesc0 *)fdp,
-	 * which must not be freed.
-	 */
-	if (onfiles > NDFILE) {
-		/*
-		 * Note we may be called here from fdinit while allocating a
-		 * table for a new process in which case ->p_fd points
-		 * elsewhere.
-		 */
-		if (curproc->p_fd != fdp || FILEDESC_IS_ONLY_USER(fdp)) {
-			free(otable, M_FILEDESC);
-		} else {
-			ft = (struct freetable *)&otable->fdt_ofiles[onfiles];
-			fdp0 = (struct filedesc0 *)fdp;
-			ft->ft_table = otable;
-			SLIST_INSERT_HEAD(&fdp0->fd_free, ft, ft_next);
-		}
-	}
-	/*
-	 * The map does not have the same possibility of threads still
-	 * holding references to it.  So always free it as long as it
-	 * does not reference the original static allocation.
-	 */
-	if (NDSLOTS(onfiles) > NDSLOTS(NDFILE))
-		free(omap, M_FILEDESC);
+    /*
+     * Free the old file table when not shared by other threads or processes.
+     * The old file table is considered to be shared when either are true:
+     * - The process has more than one thread.
+     * - The file descriptor table has been shared via fdshare().
+     *
+     * When shared, the old file table will be placed on a freelist
+     * which will be processed when the struct filedesc is released.
+     *
+     * Note that if onfiles == NDFILE, we're dealing with the original
+     * static allocation contained within (struct filedesc0 *)fdp,
+     * which must not be freed.
+     */
+    if (onfiles > NDFILE) {
+        /*
+         * Note we may be called here from fdinit while allocating a
+         * table for a new process in which case ->p_fd points
+         * elsewhere.
+         */
+        if (curproc->p_fd != fdp || FILEDESC_IS_ONLY_USER(fdp)) {
+            free(otable, M_FILEDESC);
+        } else {
+            ft = (struct freetable *)&otable->fdt_ofiles[onfiles];
+            fdp0 = (struct filedesc0 *)fdp;
+            ft->ft_table = otable;
+            SLIST_INSERT_HEAD(&fdp0->fd_free, ft, ft_next);
+        }
+    }
+    /*
+     * The map does not have the same possibility of threads still
+     * holding references to it.  So always free it as long as it
+     * does not reference the original static allocation.
+     */
+    if (NDSLOTS(onfiles) > NDSLOTS(NDFILE))
+        free(omap, M_FILEDESC);
 }
+
+/* Addition of SAFE_MEMCPY macro definition */
+#define SAFE_MEMCPY(to, from, len) do { \
+    size_t _len = (len); \
+    if (_len > 0) { \
+        __builtin_memcpy((to), (from), _len); \
+    } \
+} while (0)
 
 /*
  * Allocate a file descriptor for the process.
