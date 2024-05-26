@@ -450,44 +450,56 @@ taskqueue_unblock(struct taskqueue *queue)
 static void
 taskqueue_run_locked(struct taskqueue *queue)
 {
-	struct epoch_tracker et;
-	struct taskqueue_busy tb;
-	struct task *task;
-	bool in_net_epoch;
-	int pending;
+    struct epoch_tracker et;
+    struct taskqueue_busy *tb;
+    struct task *task;
+    bool in_net_epoch;
+    int pending;
 
-	KASSERT(queue != NULL, ("tq is NULL"));
-	TQ_ASSERT_LOCKED(queue);
-	tb.tb_running = NULL;
-	LIST_INSERT_HEAD(&queue->tq_active, &tb, tb_link);
-	in_net_epoch = false;
+    KASSERT(queue != NULL, ("tq is NULL"));
+    TQ_ASSERT_LOCKED(queue);
 
-	while ((task = STAILQ_FIRST(&queue->tq_queue)) != NULL) {
-		STAILQ_REMOVE_HEAD(&queue->tq_queue, ta_link);
-		if (queue->tq_hint == task)
-			queue->tq_hint = NULL;
-		pending = task->ta_pending;
-		task->ta_pending = 0;
-		tb.tb_running = task;
-		tb.tb_seq = ++queue->tq_seq;
-		TQ_UNLOCK(queue);
+    /* Change the local variable tb to dynamic allocation (using correct arguments) */
+    tb = malloc(sizeof(struct taskqueue_busy), M_TASKQUEUE, M_NOWAIT);
+    if (tb == NULL) {
+        /* Handle memory allocation failure (use printf instead of perror) */
+        printf("Failed to allocate memory for taskqueue_busy\n");
+        return;
+    }
 
-		KASSERT(task->ta_func != NULL, ("task->ta_func is NULL"));
-		if (!in_net_epoch && TASK_IS_NET(task)) {
-			in_net_epoch = true;
-			NET_EPOCH_ENTER(et);
-		} else if (in_net_epoch && !TASK_IS_NET(task)) {
-			NET_EPOCH_EXIT(et);
-			in_net_epoch = false;
-		}
-		task->ta_func(task->ta_context, pending);
+    tb->tb_running = NULL;
+    LIST_INSERT_HEAD(&queue->tq_active, tb, tb_link);
+    in_net_epoch = false;
 
-		TQ_LOCK(queue);
-		wakeup(task);
-	}
-	if (in_net_epoch)
-		NET_EPOCH_EXIT(et);
-	LIST_REMOVE(&tb, tb_link);
+    while ((task = STAILQ_FIRST(&queue->tq_queue)) != NULL) {
+        STAILQ_REMOVE_HEAD(&queue->tq_queue, ta_link);
+        if (queue->tq_hint == task)
+            queue->tq_hint = NULL;
+        pending = task->ta_pending;
+        task->ta_pending = 0;
+        tb->tb_running = task;
+        tb->tb_seq = ++queue->tq_seq;
+        TQ_UNLOCK(queue);
+
+        KASSERT(task->ta_func != NULL, ("task->ta_func is NULL"));
+        if (!in_net_epoch && TASK_IS_NET(task)) {
+            in_net_epoch = true;
+            NET_EPOCH_ENTER(et);
+        } else if (in_net_epoch && !TASK_IS_NET(task)) {
+            NET_EPOCH_EXIT(et);
+            in_net_epoch = false;
+        }
+        task->ta_func(task->ta_context, pending);
+
+        TQ_LOCK(queue);
+        wakeup(task);
+    }
+    if (in_net_epoch)
+        NET_EPOCH_EXIT(et);
+
+    LIST_REMOVE(tb, tb_link);
+    /* Free the allocated memory (using correct arguments) */
+    free(tb, M_TASKQUEUE);
 }
 
 void
