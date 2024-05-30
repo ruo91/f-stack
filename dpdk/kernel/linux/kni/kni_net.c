@@ -829,6 +829,11 @@ static const struct net_device_ops kni_net_netdev_ops = {
 #endif
 };
 
+/* Modified part: Define the strlcpy function if it is not already defined */
+#ifndef strlcpy
+#define strlcpy(dst, src, size) strncpy(dst, src, size)
+#endif
+
 static void kni_get_drvinfo(struct net_device *dev,
 			    struct ethtool_drvinfo *info)
 {
