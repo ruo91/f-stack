@@ -52,7 +52,7 @@ int main(int argc, char **argv)
     int ch, delay = 1, n = 0;
     int single = 0;
     unsigned int i, j;
-    struct ff_traffic_args traffic = {0, 0, 0, 0}, otr;
+    struct ff_traffic_args traffic = {0, 0, 0, 0}, otr = {0, 0, 0, 0};
     struct ff_traffic_args ptraffic[RTE_MAX_LCORE], potr[RTE_MAX_LCORE];
     int proc_id = 0, max_proc_id = -1;
     uint64_t rxp, rxb, txp, txb;
