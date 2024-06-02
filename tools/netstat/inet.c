@@ -204,11 +204,11 @@ protopr(u_long off, const char *name, int af1, int proto)
 	int istcp;
 	char *buf;
 	const char *vchar;
-	struct xtcpcb *tp;
+	struct xtcpcb *tp = NULL;
 	struct xinpcb *inp;
 	struct xinpgen *xig, *oxig;
 	struct xsocket *so;
-	int fnamelen, cnamelen;
+	int fnamelen = 0, cnamelen = 0;
 
 	istcp = 0;
 	switch (proto) {
