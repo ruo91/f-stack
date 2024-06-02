@@ -51,8 +51,8 @@ ioctl_va(int fd, unsigned long com, void *data, int argc, ...)
 {
     struct ff_msg *msg, *retmsg = NULL;
     unsigned size;
-    void *cpy_mem;
-    size_t offset, clen;
+    void *cpy_mem = NULL;
+    size_t offset = 0, clen = 0;
     int af = AF_INET;
 
     if (argc != 0 && argc != 3 && argc != 1) {
